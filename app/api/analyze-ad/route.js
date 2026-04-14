@@ -250,7 +250,31 @@ RULES:
     }
 
     // ─── STEP 5: Apply changes to ORIGINAL full HTML ─────────────────────────────
-    const modifiedHtml = applyChanges(originalHtml, changes, adPrimaryColor);
+    let modifiedHtml = applyChanges(originalHtml, changes, adPrimaryColor);
+
+    // ─── NEW STEP: Sanitize for Iframe (Kill all JavaScript) ─────────────────────
+    const final$ = cheerio.load(modifiedHtml);
+    
+    // 1. Nuke standard scripts
+    final$('script').remove();
+    
+    // 2. Nuke Next.js/React preloaded scripts (This fixes the Invalid URL error)
+    final$('link[as="script"]').remove();
+    final$('link[rel="modulepreload"]').remove();
+    
+    // 3. Remove inline Javascript events (e.g., onload, onerror)
+    final$('*').each(function() {
+      if (this.attribs) {
+        for (const attr in this.attribs) {
+          if (attr.toLowerCase().startsWith('on')) {
+            final$(this).removeAttr(attr);
+          }
+        }
+      }
+    });
+
+    // Update modifiedHtml with the bulletproof version
+    modifiedHtml = final$.html();
 
     return Response.json({
       originalHtml,
