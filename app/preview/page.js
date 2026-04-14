@@ -120,6 +120,10 @@ export default function PreviewPage() {
             />
           </div>
         </div>
+        <p className="text-xs text-gray-400 text-center mt-2">
+          * Some sites may appear unstyled in preview due to browser CORS restrictions. 
+          Personalization is still applied correctly to the HTML.
+        </p>
 
         {/* Changes Made */}
         <div className="border border-gray-200 rounded-xl p-6 shadow-sm">
