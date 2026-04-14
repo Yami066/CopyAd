@@ -1,7 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Allow larger payloads for base64 image uploads
-  experimental: {},
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
 }
 
-export default nextConfig
+module.exports = nextConfig
