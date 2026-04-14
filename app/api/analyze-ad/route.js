@@ -252,32 +252,24 @@ RULES:
     // ─── STEP 5: Apply changes to ORIGINAL full HTML ─────────────────────────────
     let modifiedHtml = applyChanges(originalHtml, changes, adPrimaryColor);
 
-    // ─── NEW STEP: Sanitize for Iframe (Kill all JavaScript) ─────────────────────
+    // ─── NEW STEP: Sanitize BOTH outputs for Iframes ─────────────────────
+    
+    // 1. Sanitize the Personalized HTML
     const final$ = cheerio.load(modifiedHtml);
-    
-    // 1. Nuke standard scripts
     final$('script').remove();
-    
-    // 2. Nuke Next.js/React preloaded scripts (This fixes the Invalid URL error)
     final$('link[as="script"]').remove();
     final$('link[rel="modulepreload"]').remove();
-    
-    // 3. Remove inline Javascript events (e.g., onload, onerror)
-    final$('*').each(function() {
-      if (this.attribs) {
-        for (const attr in this.attribs) {
-          if (attr.toLowerCase().startsWith('on')) {
-            final$(this).removeAttr(attr);
-          }
-        }
-      }
-    });
-
-    // Update modifiedHtml with the bulletproof version
     modifiedHtml = final$.html();
 
+    // 2. Sanitize the Original HTML (So the left side doesn't crash)
+    const original$ = cheerio.load(originalHtml);
+    original$('script').remove();
+    original$('link[as="script"]').remove();
+    original$('link[rel="modulepreload"]').remove();
+    const safeOriginalHtml = original$.html();
+
     return Response.json({
-      originalHtml,
+      originalHtml: safeOriginalHtml, // Pass the sanitized version!
       modifiedHtml,
       changes,
       adAnalysis,
