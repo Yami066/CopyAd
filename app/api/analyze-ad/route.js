@@ -254,23 +254,31 @@ RULES:
 
     // ─── NEW STEP: Sanitize BOTH outputs for Iframes ─────────────────────
     
-    // 1. Sanitize the Personalized HTML
-    const final$ = cheerio.load(modifiedHtml);
-    final$('script').remove();
-    final$('link[as="script"]').remove();
-    final$('link[rel="modulepreload"]').remove();
-    modifiedHtml = final$.html();
+    function sanitizeForIframe(htmlString) {
+      const $ = cheerio.load(htmlString);
+      
+      // 1. Kill all JavaScript
+      $('script').remove();
+      $('link[as="script"]').remove();
+      $('link[rel="modulepreload"]').remove();
+      
+      // 2. Force Visibility (Bypass Anti-Flicker CSS)
+      $('html').removeClass().removeAttr('style');
+      // Force the body to be fully visible and ensure it has a background color
+      $('body')
+        .removeClass()
+        .attr('style', 'opacity: 1 !important; visibility: visible !important; display: block !important; min-height: 100vh !important;');
+        
+      return $.html();
+    }
 
-    // 2. Sanitize the Original HTML (So the left side doesn't crash)
-    const original$ = cheerio.load(originalHtml);
-    original$('script').remove();
-    original$('link[as="script"]').remove();
-    original$('link[rel="modulepreload"]').remove();
-    const safeOriginalHtml = original$.html();
+    // Apply the ultimate sanitizer to both versions
+    modifiedHtml = sanitizeForIframe(modifiedHtml);
+    const safeOriginalHtml = sanitizeForIframe(originalHtml);
 
     return Response.json({
-      originalHtml: safeOriginalHtml, // Pass the sanitized version!
-      modifiedHtml,
+      originalHtml: safeOriginalHtml,
+      modifiedHtml: modifiedHtml,
       changes,
       adAnalysis,
       adPrimaryColor: adPrimaryColor || null,
