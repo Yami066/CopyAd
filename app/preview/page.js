@@ -132,7 +132,7 @@ export default function PreviewPage() {
 
           {!changes || changes.length === 0 ? (
             <p className="text-sm text-gray-400 italic">
-              No changes were made — the pages should look identical. This may happen if Gemini couldn't find matching elements.
+              No changes were made — the pages should look identical. This may happen if Gemini couldn&apos;t find matching elements.
             </p>
           ) : (
             <div className="space-y-4">
