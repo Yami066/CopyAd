@@ -121,7 +121,7 @@ export default function PreviewPage() {
           </div>
         </div>
         <p className="text-xs text-gray-400 text-center mt-2">
-          * Some sites may appear unstyled in preview due to browser CORS restrictions. 
+          * Some sites may appear unstyled in preview due to browser CORS restrictions.
           Personalization is still applied correctly to the HTML.
         </p>
 
@@ -140,25 +140,16 @@ export default function PreviewPage() {
             </p>
           ) : (
             <div className="space-y-4">
-              {changes.map((change, i) => (
+              {Object.entries(changes).map(([nodeId, newText], i) => (
                 <div key={i} className="border border-gray-100 rounded-lg p-4 bg-gray-50">
                   <div className="flex items-start gap-3">
-                    {/* Old */}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-semibold text-red-500 uppercase tracking-wider mb-1">Before</p>
-                      <div className="text-sm text-gray-700 break-words font-mono bg-red-50 border border-red-100 rounded px-3 py-2">
-                        {change.selector || 'N/A'}
+                    <div className="w-full">
+                      <div className="mb-1 text-xs font-mono text-gray-500 uppercase">
+                        Target: {nodeId}
                       </div>
-                    </div>
-                    {/* Arrow */}
-                    <div className="pt-5 text-gray-400 text-lg flex-shrink-0">→</div>
-                    {/* New */}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-semibold text-green-600 uppercase tracking-wider mb-1">After</p>
-                      <div
-                        className="text-sm text-gray-700 break-words font-mono bg-green-50 border border-green-100 rounded px-3 py-2"
-                        dangerouslySetInnerHTML={{ __html: change.newInnerHtml || '' }}
-                      />
+                      <div className="text-sm text-gray-800">
+                        {newText}
+                      </div>
                     </div>
                   </div>
                 </div>

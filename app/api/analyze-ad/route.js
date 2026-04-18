@@ -19,22 +19,41 @@ async function withRetry(fn, retries = 3, delayMs = 2000) {
   }
 }
 
+const NAV_WORDS = /^(home|about|login|sign up|menu|contact|blog|faq|privacy|terms|search)$/i;
+const CANDIDATE_TAGS = ['h1', 'h2', 'h3', 'p', 'a', 'button', 'span'];
+const MAX_NODES = 15;
+
 /**
- * Clean HTML to reduce token usage before sending to Gemini
+ * Stamp up to MAX_NODES content nodes with stable data-runtime-id attributes
+ * and return both the stamped HTML and a { id -> text } map for the AI.
  */
-function cleanHtml(html) {
+function buildRuntimeMap(html) {
   const $ = cheerio.load(html);
-  $('script, style, svg, path, noscript, link, meta, picture, source, img, iframe').remove();
-  $('*').each(function () {
-    if (this.attribs) {
-      Object.keys(this.attribs).forEach(attr => {
-        if (attr !== 'class' && attr !== 'id') $(this).removeAttr(attr);
-      });
-    }
-  });
-  let cleaned = $('body').html() || $.html();
-  if (cleaned.length > 3000) cleaned = cleaned.substring(0, 3000) + '...';
-  return cleaned.trim();
+
+  // Strip chrome / boilerplate elements
+  $('nav, footer, header, aside, script, style, noscript').remove();
+
+  const map = {};
+  let counter = 0;
+
+  for (const tag of CANDIDATE_TAGS) {
+    if (counter >= MAX_NODES) break;
+    $(tag).each(function () {
+      if (counter >= MAX_NODES) return false; // break
+
+      const text = $(this).text().trim();
+      if (!text) return;
+      if (text.length < 8 || text.length > 400) return;
+      if (NAV_WORDS.test(text)) return;
+
+      const id = `node_${counter}`;
+      $(this).attr('data-runtime-id', id);
+      map[id] = text;
+      counter++;
+    });
+  }
+
+  return { html: $.html(), map };
 }
 
 function extractJSON(text) {
@@ -53,50 +72,64 @@ function extractJSON(text) {
   }
 }
 
-function applyChanges(html, changes, adPrimaryColor) {
+/**
+ * Write AI-returned texts back into the stamped HTML by data-runtime-id,
+ * then strip all data-runtime-id attributes before returning.
+ */
+function injectAndCleanup(html, aiChanges) {
   const $ = cheerio.load(html);
 
-  for (const change of changes) {
-    const { selector, newInnerHtml } = change;
-    if (!selector || !newInnerHtml) continue;
-
-    try {
-      let $el = $(selector);
-      if ($el.length === 0) {
-        const tagMatch = selector.match(/^[a-z0-9]+/i);
-        if (tagMatch && ['h1', 'h2', 'h3', 'p'].includes(tagMatch[0].toLowerCase())) {
-          $el = $(tagMatch[0]);
-        }
-        if ($el.length === 0) {
-          console.warn(`[REPLACE FAILED]: "${selector}"`);
-          continue;
-        }
-      }
-
-      $el.first().html(newInnerHtml);
-
-      // Apply dominant ad color to CTA button and H1 only
-      if (adPrimaryColor) {
-        const tag = selector.match(/^[a-z0-9]+/i)?.[0]?.toLowerCase();
-        if (tag === 'a' || tag === 'button') {
-          const existing = $el.first().attr('style') || '';
-          $el.first().attr('style', `${existing}; background-color: ${adPrimaryColor} !important; border-color: ${adPrimaryColor} !important;`);
-          console.log(`[COLOR APPLIED to CTA]: ${adPrimaryColor}`);
-        }
-        if (tag === 'h1') {
-          const existing = $el.first().attr('style') || '';
-          $el.first().attr('style', `${existing}; color: ${adPrimaryColor} !important;`);
-          console.log(`[COLOR APPLIED to H1]: ${adPrimaryColor}`);
-        }
-      }
-
-      console.log(`[REPLACE SUCCESS]: Updated "${selector}"`);
-    } catch (e) {
-      console.warn(`[CHEERIO ERROR]: ${e.message}`);
-    }
+  for (const [id, newText] of Object.entries(aiChanges)) {
+    $(`[data-runtime-id="${id}"]`).first().text(newText);
+    console.log(`[INJECT SUCCESS]: ${id} → "${newText.slice(0, 60)}"`);
   }
 
+  $('[data-runtime-id]').removeAttr('data-runtime-id');
+
   return $.html();
+}
+
+function injectAdBanner(html, adAnalysis, adPrimaryColor) {
+  const color = adPrimaryColor || '#000000'
+
+  const r = parseInt(color.slice(1, 3), 16)
+  const g = parseInt(color.slice(3, 5), 16)
+  const b = parseInt(color.slice(5, 7), 16)
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000
+  const textColor = brightness > 128 ? '#000000' : '#ffffff'
+
+  const banner = `
+  <div style="
+    width: 100%;
+    background-color: ${color};
+    color: ${textColor};
+    padding: 12px 24px;
+    text-align: center;
+    font-family: sans-serif;
+    box-sizing: border-box;
+    z-index: 99999;
+    position: relative;
+  ">
+    <span style="font-size: 15px; font-weight: 600;">
+      ${adAnalysis.offer || 'Special Offer'}
+    </span>
+    <span style="font-size: 13px; margin-left: 12px; opacity: 0.9;">
+      ${adAnalysis.benefit || ''}
+    </span>
+    ${adAnalysis.cta ? `
+    <a href="#" style="
+      margin-left: 16px;
+      background: ${textColor};
+      color: ${color};
+      padding: 4px 14px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 600;
+      text-decoration: none;
+    ">${adAnalysis.cta}</a>` : ''}
+  </div>`
+
+  return html.replace(/<body[^>]*>/i, `$&${banner}`)
 }
 
 export async function POST(request) {
@@ -207,8 +240,8 @@ export async function POST(request) {
       originalHtml = baseTag + originalHtml
     }
 
-    // ─── STEP 3: Clean HTML for Gemini (token saving) ────────────────────────────
-    const truncatedHtml = cleanHtml(originalHtml)
+    // ─── STEP 3: Build Runtime Node Map for Gemini ───────────────────────────────
+    const { html: mappedHtml, map: runtimeMap } = buildRuntimeMap(originalHtml)
 
     // ─── STEP 4: Gemini text — Generate CRO changes ──────────────────────────────
     const textModel = genAI.getGenerativeModel({
@@ -216,20 +249,21 @@ export async function POST(request) {
       generationConfig: { temperature: 0.3 },
     })
 
-    const croPrompt = `You are a CRO expert. Given this ad analysis: ${JSON.stringify(adAnalysis)} and this landing page HTML: ${truncatedHtml} — rewrite the main H1, first H2, primary CTA button, and hero paragraph to match the ad's message.
+    const croPrompt = `You are a CRO expert. Given this ad analysis: ${JSON.stringify(adAnalysis)}
 
-RULES:
-1. Return ONLY a valid JSON array: [{ "selector": "...", "newInnerHtml": "..." }]
-2. CRITICAL: "selector" MUST be extracted directly from the provided HTML. Look at the actual class names in the HTML string.
-3. DO NOT invent generic classes like "h1.hero-title" or "a.primary-cta". If the HTML has <h1 class="main-heading-txt">, the selector must be "h1.main-heading-txt".
-4. "newInnerHtml" MUST preserve any nested HTML tags like <span> or <br> from the original element. Only change the text words.
-5. Do not return anything outside the JSON array.`
+Here is the extracted text mapped to node IDs:
+${JSON.stringify(runtimeMap, null, 2)}
+
+Return ONLY a valid JSON object with the exact same keys.
+Update the values to match the ad's message and offer.
+Plain text only — no HTML tags in values.
+Do not add or remove keys.`
     let changes = []
     try {
       const textResult = await withRetry(() => textModel.generateContent(croPrompt))
       const textRaw = textResult.response.text()
       const parsed = extractJSON(textRaw)
-      changes = Array.isArray(parsed) ? parsed : []
+      changes = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
     } catch (err) {
       console.error('[analyze-ad] Gemini CRO changes failed, falling back to Groq:', err?.status || err)
       try {
@@ -242,15 +276,19 @@ RULES:
         });
         const groqText = groqResponse.choices[0].message.content;
         const parsed = extractJSON(groqText);
-        changes = Array.isArray(parsed) ? parsed : []
+        changes = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
       } catch (fallbackErr) {
         console.error('[analyze-ad] Groq CRO fallback failed:', fallbackErr);
-        changes = []
+        changes = {}
       }
     }
 
-    // ─── STEP 5: Apply changes to ORIGINAL full HTML ─────────────────────────────
-    let modifiedHtml = applyChanges(originalHtml, changes, adPrimaryColor);
+    // ─── STEP 5: Inject AI changes + ad banner into mapped HTML ───────────────────
+    let modifiedHtml = injectAdBanner(
+      injectAndCleanup(mappedHtml, changes),
+      adAnalysis,
+      adPrimaryColor
+    );
 
     // ─── NEW STEP: Sanitize BOTH outputs for Iframes ─────────────────────
     

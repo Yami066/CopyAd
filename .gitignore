@@ -11,7 +11,7 @@
 .env.local
 .env
 node_modules
-.next
+
 # next.js
 /.next/
 /out/
