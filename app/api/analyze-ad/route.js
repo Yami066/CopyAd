@@ -34,30 +34,33 @@ function buildRuntimeMap(html) {
   $('nav, footer, header, aside, script, style, noscript').remove();
 
   const map = {};
-  let counter = 0;
+  let nodeIndex = 0;
 
-  for (const tag of CANDIDATE_TAGS) {
-    if (counter >= MAX_NODES) break;
-    $(tag).each(function () {
-      if (counter >= MAX_NODES) return false; // break
+  $('h1, h2, h3, p, a, button, span').each((i, el) => {
+    if (nodeIndex >= 20) return false;
 
-      const text = $(this).text().trim();
-      if (!text) return;
-      if (text.length < 8 || text.length > 400) return;
-      if (NAV_WORDS.test(text)) return;
+    // 1. If any ancestor is already tagged, skip this child immediately
+    if ($(el).closest('[data-runtime-id]').length > 0) return;
 
-      // Skip if an ancestor is already tagged (avoid child double-tagging)
-      if ($(this).parents('[data-runtime-id]').length > 0) return;
+    // 2. If this element contains structural block children, let the children handle it
+    if ($(el).find('h1, h2, h3, p, div').length > 0) return;
 
-      // Skip if a descendant is already tagged (avoid parent double-tagging)
-      if ($(this).find('[data-runtime-id]').length > 0) return;
+    // 3. Extract text — Cheerio's .text() flattens all inner spans/strongs automatically
+    const text = $(el).text().replace(/\s+/g, ' ').trim();
 
-      const id = `node_${counter}`;
-      $(this).attr('data-runtime-id', id);
-      map[id] = text;
-      counter++;
-    });
-  }
+    if (!text || text.length < 8 || text.length > 900) return;
+    const skipWords = [
+      'home', 'about', 'login', 'sign up', 'menu', 'contact',
+      'privacy', 'terms', 'cookie', 'copyright', 'all rights reserved',
+      'follow us', 'subscribe', 'newsletter', 'language', 'english',
+      'search', 'close', 'open', 'back', 'next', 'previous', 'skip'
+    ];
+    if (skipWords.some(w => text.toLowerCase().includes(w))) return;
+
+    const id = `node_${nodeIndex++}`;
+    $(el).attr('data-runtime-id', id);
+    map[id] = text;
+  });
 
   return { html: $.html(), map };
 }
