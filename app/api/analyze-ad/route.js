@@ -46,6 +46,12 @@ function buildRuntimeMap(html) {
       if (text.length < 8 || text.length > 400) return;
       if (NAV_WORDS.test(text)) return;
 
+      // Skip if an ancestor is already tagged (avoid child double-tagging)
+      if ($(this).parents('[data-runtime-id]').length > 0) return;
+
+      // Skip if a descendant is already tagged (avoid parent double-tagging)
+      if ($(this).find('[data-runtime-id]').length > 0) return;
+
       const id = `node_${counter}`;
       $(this).attr('data-runtime-id', id);
       map[id] = text;
