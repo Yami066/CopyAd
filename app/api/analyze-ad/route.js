@@ -141,6 +141,88 @@ function injectAdBanner(html, adAnalysis, adPrimaryColor) {
   return html.replace(/<body[^>]*>/i, `$&${banner}`)
 }
 
+async function generateMatchScore(adAnalysis, runtimeMap, changes) {
+  const originalText = JSON.stringify(runtimeMap, null, 2)
+  const newText = JSON.stringify(changes, null, 2)
+
+  const scorePrompt = `You are a strict Conversion Rate Optimization (CRO) auditor. 
+Your job is to objectively score how well a Personalized Landing Page matches an Ad Creative using a deterministic penalty rubric.
+
+Ad Context:
+- Offer: ${adAnalysis.offer}
+- Audience: ${adAnalysis.audience}
+- Benefit: ${adAnalysis.benefit}
+- CTA: ${adAnalysis.cta}
+
+Original page text (For context only):
+${originalText}
+
+Personalized page text (Evaluate this!):
+${newText}
+
+SCORING RUBRIC (Strictly follow this):
+Evaluate the 4 dimensions below out of 100 points each. Do not guess; map the text to these specific tiers.
+
+1. message (100 pts): 
+   - 100: Exact offer and primary benefit from the ad are explicitly stated.
+   - 70: Offer is vaguely mentioned, missing specific numbers or core details.
+   - 30: Offer is completely missing or contradicts the ad.
+
+2. audience (100 pts):
+   - 100: Vocabulary directly speaks to the target audience's specific needs.
+   - 70: Generic copy, applicable to anyone, not specific to the audience.
+   - 30: Uses language that alienates or confuses the target audience.
+
+3. tone (100 pts):
+   - 100: Energy and style perfectly match the ad.
+   - 70: Tone is slightly off (e.g., ad is highly urgent, page is relaxed).
+   - 30: Completely jarring tone mismatch.
+
+4. cta (100 pts):
+   - 100: Action language strictly matches the ad's CTA intent.
+   - 70: Action is present but uses weaker or different verbs.
+   - 30: CTA intent is completely ignored.
+
+CALCULATION:
+The overall "score" MUST be the exact mathematical average of the 4 dimension scores.
+
+Return ONLY a valid JSON object matching this exact schema. Do not include markdown formatting like \`\`\`json.
+{
+  "score": <integer 0-100>,
+  "reason": "<One analytical sentence explaining the biggest point deduction. If 100, output 'Perfect message match.'>",
+  "breakdown": {
+    "message": <integer 0-100>,
+    "audience": <integer 0-100>,
+    "tone": <integer 0-100>,
+    "cta": <integer 0-100>
+  }
+}`
+
+  try {
+    const textModel = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      generationConfig: { temperature: 0.1 }
+    })
+    const result = await withRetry(() => textModel.generateContent(scorePrompt))
+    const parsed = extractJSON(result.response.text())
+    if (parsed && parsed.score) return parsed
+  } catch (err) {
+    console.log('[score] Gemini failed, trying Groq...')
+    try {
+      const groqRes = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: scorePrompt }],
+        max_tokens: 300
+      })
+      const parsed = extractJSON(groqRes.choices[0].message.content)
+      if (parsed && parsed.score) return parsed
+    } catch (e) {
+      console.error('[score] Both failed:', e)
+    }
+  }
+  return null
+}
+
 export async function POST(request) {
   try {
     const body = await request.json()
@@ -299,6 +381,9 @@ Do not add or remove keys.`
       adPrimaryColor
     );
 
+    const matchScore = await generateMatchScore(adAnalysis, runtimeMap, changes)
+    console.log(`[score] Match score: ${matchScore?.score}/100`)
+
     // ─── NEW STEP: Sanitize BOTH outputs for Iframes ─────────────────────
     
     function sanitizeForIframe(htmlString) {
@@ -329,6 +414,7 @@ Do not add or remove keys.`
       changes,
       adAnalysis,
       adPrimaryColor: adPrimaryColor || null,
+      matchScore: matchScore || null,
     })
   } catch (err) {
     console.error('[analyze-ad] Unhandled error:', err)

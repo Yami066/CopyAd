@@ -44,7 +44,7 @@ export default function PreviewPage() {
     )
   }
 
-  const { originalHtml, modifiedHtml, changes, adAnalysis, adPrimaryColor } = data
+  const { originalHtml, modifiedHtml, changes, adAnalysis, adPrimaryColor, matchScore } = data
 
   return (
     <div className="min-h-screen bg-white">
@@ -84,6 +84,39 @@ export default function PreviewPage() {
               </div>
             )}
           </div>
+          {matchScore && (
+            <div className="mt-4 border border-gray-100 rounded-lg p-4 bg-gray-50">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  Message Match Score
+                </p>
+                <div className={`text-2xl font-bold ${
+                  matchScore.score >= 80 ? 'text-green-600' :
+                  matchScore.score >= 60 ? 'text-yellow-500' : 'text-red-500'
+                }`}>
+                  {matchScore.score}/100
+                </div>
+              </div>
+              <p className="text-sm text-gray-600 mb-3">{matchScore.reason}</p>
+              <div className="grid grid-cols-4 gap-3">
+                {Object.entries(matchScore.breakdown).map(([key, val]) => (
+                  <div key={key} className="text-center">
+                    <div className="text-xs text-gray-400 uppercase mb-1">{key}</div>
+                    <div className="text-sm font-semibold text-gray-700">{val}/100</div>
+                    <div className="w-full bg-gray-200 rounded-full h-1.5 mt-1">
+                      <div
+                        className={`h-1.5 rounded-full ${
+                          val >= 80 ? 'bg-green-500' :
+                          val >= 60 ? 'bg-yellow-400' : 'bg-red-400'
+                        }`}
+                        style={{ width: `${val}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Split-screen iframes */}
