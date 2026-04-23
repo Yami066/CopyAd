@@ -1,9 +1,17 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import Groq from 'groq-sdk'
 import * as cheerio from 'cheerio'
+import { Redis } from '@upstash/redis'
+import { supabase } from '../../lib/supabase'
+import crypto from 'crypto'
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+})
 
 async function withRetry(fn, retries = 3, delayMs = 2000) {
   for (let i = 0; i < retries; i++) {
@@ -235,6 +243,28 @@ export async function POST(request) {
       return Response.json({ error: 'Invalid landingPageUrl.' }, { status: 400 });
     }
 
+    // ─── NEW: REDIS CACHE CHECK ────────────────────────────────────────────────
+    let cacheKey = null;
+    if (adImageUrl) {
+      cacheKey = `copyad:${adImageUrl}-${landingPageUrl}`;
+    } else if (adImageBase64) {
+      const hash = crypto.createHash('md5').update(adImageBase64 + landingPageUrl).digest('hex');
+      cacheKey = `copyad:base64-${hash}`;
+    }
+
+    if (cacheKey) {
+      try {
+        const cachedData = await redis.get(cacheKey);
+        if (cachedData) {
+          console.log(`[cache] HIT for ${cacheKey}`);
+          return Response.json({ ...cachedData, source: 'redis-cache' }, { status: 200 });
+        }
+      } catch (cacheErr) {
+        console.error('[cache] Error reading from Redis:', cacheErr);
+      }
+    }
+    // ───────────────────────────────────────────────────────────────────────────
+
     // ─── STEP 1: Gemini Vision — Analyze the ad ──────────────────────────────────
     const visionModel = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
 
@@ -408,14 +438,45 @@ Do not add or remove keys.`
     modifiedHtml = sanitizeForIframe(modifiedHtml);
     const safeOriginalHtml = sanitizeForIframe(originalHtml);
 
-    return Response.json({
+    const finalPayload = {
       originalHtml: safeOriginalHtml,
       modifiedHtml: modifiedHtml,
       changes,
       adAnalysis,
       adPrimaryColor: adPrimaryColor || null,
       matchScore: matchScore || null,
-    })
+    };
+
+    try {
+      // Save to Supabase safely
+      const dbPromise = supabase
+        .from('ad_generations')
+        .insert([
+          {
+            ad_image_url: adImageUrl || 'base64-upload',
+            target_url: landingPageUrl,
+            ai_copy: changes,
+          }
+        ])
+        .then(({ error }) => {
+          if (error) console.error('[db] Supabase insert error:', error);
+          else console.log('[db] Saved to Supabase successfully');
+        })
+        .catch(dbErr => console.error('[db] Supabase save exception:', dbErr));
+
+      // Save to Redis Cache safely (expiration in seconds: 86400 = 24h)
+      const cachePromise = cacheKey 
+        ? redis.set(cacheKey, finalPayload, { ex: 86400 })
+            .then(() => console.log(`[cache] Saved to Redis: ${cacheKey}`))
+            .catch(cacheErr => console.error('[cache] Redis save error:', cacheErr))
+        : Promise.resolve();
+
+      await Promise.all([dbPromise, cachePromise]);
+    } catch (saveErr) {
+      console.error('[save] Error during block execution of DB/Redis:', saveErr);
+    }
+
+    return Response.json({ ...finalPayload, source: 'ai-generation' });
   } catch (err) {
     console.error('[analyze-ad] Unhandled error:', err)
     const msg = err?.status === 429
