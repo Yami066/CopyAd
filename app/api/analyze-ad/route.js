@@ -4,6 +4,7 @@ import * as cheerio from 'cheerio'
 import { Redis } from '@upstash/redis'
 import { supabase } from '../../lib/supabase'
 import crypto from 'crypto'
+import puppeteer from 'puppeteer'
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
@@ -265,7 +266,7 @@ export async function POST(request) {
     }
     // ───────────────────────────────────────────────────────────────────────────
 
-    // ─── STEP 1: Gemini Vision — Analyze the ad ──────────────────────────────────
+    // ─── STEP 1 & 2: Parallelize Vision API and Page Fetch ───────────────────────
     const visionModel = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
 
     // NOTE: Image should ideally be under 1MB for Vision API
@@ -274,7 +275,6 @@ export async function POST(request) {
       if (adImageBase64.length > 500000) {
         return Response.json({ error: 'Image too large. Please compress before uploading.' }, { status: 400 });
       }
-      // Uploaded file — already base64 from client
       imagePart = {
         inlineData: {
           data: adImageBase64,
@@ -282,7 +282,6 @@ export async function POST(request) {
         },
       }
     } else if (adImageUrl) {
-      // For URL-based images, pass the URL directly without converting to base64
       imagePart = {
         fileData: {
           fileUri: adImageUrl,
@@ -296,55 +295,71 @@ export async function POST(request) {
     const visionPrompt =
       'Analyze this ad creative. Extract: 1) Main offer/value proposition in one sentence 2) Target audience 3) Key benefit/hook 4) CTA text if visible. Return ONLY valid JSON with keys: offer, audience, benefit, cta'
 
-    let adAnalysis = {}
-    try {
-      const visionResult = await withRetry(() => visionModel.generateContent([visionPrompt, imagePart]))
-      const visionText = visionResult.response.text()
-      adAnalysis = extractJSON(visionText) || {}
-    } catch (err) {
-      console.error('[analyze-ad] Gemini Vision failed, falling back to Groq:', err?.status || err)
+    const analyzeAdPromise = (async () => {
       try {
-        let groqImageUrl = adImageUrl;
-        if (adImageBase64 && !groqImageUrl) {
-          groqImageUrl = `data:${adImageMimeType || 'image/jpeg'};base64,${adImageBase64}`;
-        }
+        const visionResult = await withRetry(() => visionModel.generateContent([visionPrompt, imagePart]))
+        const visionText = visionResult.response.text()
+        return extractJSON(visionText) || {}
+      } catch (err) {
+        console.error('[analyze-ad] Gemini Vision failed, falling back to Groq:', err?.status || err)
+        try {
+          let groqImageUrl = adImageUrl;
+          if (adImageBase64 && !groqImageUrl) {
+            groqImageUrl = `data:${adImageMimeType || 'image/jpeg'};base64,${adImageBase64}`;
+          }
 
-        const groqResponse = await groq.chat.completions.create({
-          model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'image_url', image_url: { url: groqImageUrl } },
-                { type: 'text', text: visionPrompt }
-              ]
-            }
-          ],
-          max_tokens: 500
+          const groqResponse = await groq.chat.completions.create({
+            model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'image_url', image_url: { url: groqImageUrl } },
+                  { type: 'text', text: visionPrompt }
+                ]
+              }
+            ],
+            max_tokens: 500
+          });
+
+          return extractJSON(groqResponse.choices[0].message.content) || {};
+        } catch (fallbackErr) {
+          console.error('[analyze-ad] Groq Vision fallback failed:', fallbackErr);
+          return { offer: 'Could not analyze ad', audience: '', benefit: '', cta: '' }
+        }
+      }
+    })();
+
+    const fetchPagePromise = (async () => {
+      let browser;
+      try {
+        browser = await puppeteer.launch({
+          headless: 'new',
+          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        });
+        const page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36');
+        await page.setViewport({ width: 1440, height: 900 });
+
+        // Navigate and wait for the SPA to finish rendering
+        await page.goto(landingPageUrl, {
+          waitUntil: 'networkidle2', // Wait until there are no more than 2 network connections for 500ms
+          timeout: 20000,
         });
 
-        const result = extractJSON(groqResponse.choices[0].message.content) || {};
-        adAnalysis = result;
-      } catch (fallbackErr) {
-        console.error('[analyze-ad] Groq Vision fallback failed:', fallbackErr);
-        adAnalysis = { offer: 'Could not analyze ad', audience: '', benefit: '', cta: '' }
-      }
-    }
+        // Extra wait for late-loading JS content (like Zepto's product grid)
+        await new Promise(r => setTimeout(r, 2000));
 
-    // ─── STEP 2: Fetch landing page HTML ─────────────────────────────────────────
-    let originalHtml
+        const html = await page.content();
+        return html;
+      } finally {
+        if (browser) await browser.close();
+      }
+    })();
+
+    let adAnalysis, originalHtml;
     try {
-      const pageRes = await fetch(landingPageUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-        },
-        timeout: 15000,
-        redirect: 'follow',
-      })
-      if (!pageRes.ok) throw new Error(`HTTP ${pageRes.status}`)
-      originalHtml = await pageRes.text()
+      [adAnalysis, originalHtml] = await Promise.all([analyzeAdPromise, fetchPagePromise]);
     } catch (err) {
       console.error('[analyze-ad] Page fetch error:', err)
       return Response.json(
@@ -364,12 +379,7 @@ export async function POST(request) {
     // ─── STEP 3: Build Runtime Node Map for Gemini ───────────────────────────────
     const { html: mappedHtml, map: runtimeMap } = buildRuntimeMap(originalHtml)
 
-    // ─── STEP 4: Gemini text — Generate CRO changes ──────────────────────────────
-    const textModel = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      generationConfig: { temperature: 0.3 },
-    })
-
+    // ─── STEP 4: Groq text — Generate CRO changes ────────────────────────────────
     const croPrompt = `You are a CRO expert. Given this ad analysis: ${JSON.stringify(adAnalysis)}
 
 Here is the extracted text mapped to node IDs:
@@ -379,27 +389,30 @@ Return ONLY a valid JSON object with the exact same keys.
 Update the values to match the ad's message and offer.
 Plain text only — no HTML tags in values.
 Do not add or remove keys.`
-    let changes = []
+
+    let changes = {}
     try {
-      const textResult = await withRetry(() => textModel.generateContent(croPrompt))
-      const textRaw = textResult.response.text()
-      const parsed = extractJSON(textRaw)
+      const groqResponse = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: croPrompt }],
+        max_tokens: 1000
+      });
+      const groqText = groqResponse.choices[0].message.content;
+      const parsed = extractJSON(groqText);
       changes = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
     } catch (err) {
-      console.error('[analyze-ad] Gemini CRO changes failed, falling back to Groq:', err?.status || err)
+      console.error('[analyze-ad] Groq CRO failed, falling back to Gemini:', err?.status || err)
       try {
-        const groqResponse = await groq.chat.completions.create({
-          model: 'llama-3.3-70b-versatile',
-          messages: [
-            { role: 'user', content: croPrompt }
-          ],
-          max_tokens: 1000
-        });
-        const groqText = groqResponse.choices[0].message.content;
-        const parsed = extractJSON(groqText);
+        const textModel = genAI.getGenerativeModel({
+          model: 'gemini-2.0-flash',
+          generationConfig: { temperature: 0.3 },
+        })
+        const textResult = await withRetry(() => textModel.generateContent(croPrompt))
+        const textRaw = textResult.response.text()
+        const parsed = extractJSON(textRaw)
         changes = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
       } catch (fallbackErr) {
-        console.error('[analyze-ad] Groq CRO fallback failed:', fallbackErr);
+        console.error('[analyze-ad] Gemini CRO fallback failed:', fallbackErr);
         changes = {}
       }
     }
@@ -410,9 +423,6 @@ Do not add or remove keys.`
       adAnalysis,
       adPrimaryColor
     );
-
-    const matchScore = await generateMatchScore(adAnalysis, runtimeMap, changes)
-    console.log(`[score] Match score: ${matchScore?.score}/100`)
 
     // ─── NEW STEP: Sanitize BOTH outputs for Iframes ─────────────────────
     
@@ -444,10 +454,14 @@ Do not add or remove keys.`
       changes,
       adAnalysis,
       adPrimaryColor: adPrimaryColor || null,
-      matchScore: matchScore || null,
+      matchScore: null,
     };
 
-    try {
+    // ─── STEP 6: Fire-and-forget background tasks ─────────────────────────────────
+    generateMatchScore(adAnalysis, runtimeMap, changes).then(matchScore => {
+      finalPayload.matchScore = matchScore || null;
+      console.log(`[score] Match score computed asynchronously: ${matchScore?.score}/100`);
+
       // Save to Supabase safely
       const dbPromise = supabase
         .from('ad_generations')
@@ -471,10 +485,8 @@ Do not add or remove keys.`
             .catch(cacheErr => console.error('[cache] Redis save error:', cacheErr))
         : Promise.resolve();
 
-      await Promise.all([dbPromise, cachePromise]);
-    } catch (saveErr) {
-      console.error('[save] Error during block execution of DB/Redis:', saveErr);
-    }
+      return Promise.all([dbPromise, cachePromise]);
+    }).catch(consoleErr => console.error('[background] Error in background tasks:', consoleErr));
 
     return Response.json({ ...finalPayload, source: 'ai-generation' });
   } catch (err) {
