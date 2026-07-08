@@ -1,62 +1,68 @@
-# CopyAd — Landing Page Personalizer
+# CopyAd ⚡
 
-## What is CopyAd?
-When someone clicks an ad promising **"Super Saver Prices"** but lands on a generic homepage, they bounce.
+![Next.js](https://img.shields.io/badge/Next.js-14-black?logo=next.js)
+![Upstash Redis](https://img.shields.io/badge/Redis-Upstash-red?logo=redis)
+![Supabase](https://img.shields.io/badge/Database-Supabase-3ECF8E?logo=supabase)
+![Gemini Vision](https://img.shields.io/badge/AI-Gemini_2.0_Flash-blue?logo=google)
+![Groq](https://img.shields.io/badge/Fallback-Groq_Llama_3-orange)
 
-**CopyAd** fixes that automatically.
+**CopyAd** is an AI-powered Conversion Rate Optimization (CRO) engine that dynamically personalizes landing pages to match the exact context of the ad a user just clicked. 
 
-It acts like an AI window-dresser:
-- Reads your ad
-- Understands the offer
-- Rewrites the landing page:
-  - H1
-  - H2
-  - Hero paragraph
-  - CTA
-- Extracts brand colors from the ad
-- Applies styling to match visual identity
+Instead of routing all ad traffic to a generic homepage, CopyAd uses a lightweight Client SDK to instantly swap headlines, subtext, and CTAs on your live website, maintaining the "scent" of the ad and driving higher conversion rates.
 
-No manual A/B testing.  
-No developer required.  
-Just paste an ad and a URL.
+## 🚀 Features
 
-⚠️ **Note**
-For best results, use **SSR or static websites** (e.g., Stripe, Basecamp).  
-Complex React SPAs may not fully render due to browser CORS restrictions.
+- **Dual-Model AI Engine:** Utilizes Google's Gemini 2.0 Flash for multi-modal ad analysis and DOM mapping, with a robust fallback to Meta's Llama 3 (via Groq) to completely eliminate rate-limit downtime.
+- **Ultra-Low Latency Caching:** Powered by Upstash Redis, subsequent visits to a personalized campaign return the generated JSON payload in `<50ms`.
+- **Zero-Friction Client SDK:** B2B clients integrate via a single vanilla `<script>` tag. No reverse proxies, no DNS changes, and no WAF blocking.
+- **Safe DOM Manipulation:** Utilizes Cheerio for intelligent HTML node mapping, ensuring structural integrity and protecting against CSS flickering.
+- **Persistent Ledger:** All generations, match scores, and image hashes are securely logged in a Supabase PostgreSQL database.
 
----
+## 🏗️ Architecture Flow
 
-## Tech Stack
+1. **The Trigger:** User clicks an ad and lands on `zeptonow.com?copyad_campaign=diwali26`.
+2. **The SDK:** The CopyAd JS snippet detects the UTM parameter and pings the CopyAd API.
+3. **The Cache:** The API checks Upstash Redis. If the campaign exists, it returns the JSON payload instantly.
+4. **The AI (On Miss):** If uncached, the API analyzes the ad image, scrapes the target URL, and uses AI to map targeted copy to specific HTML nodes.
+5. **The Injection:** The SDK receives the JSON and dynamically updates the DOM client-side within 200ms.
 
-### Frontend
-- Next.js 14
-- React
-- Tailwind CSS
+## 💻 Tech Stack
 
-### Backend
-- Next.js API Routes
+- **Framework:** Next.js 14 (App Router)
+- **Database:** Supabase (PostgreSQL)
+- **Caching:** Upstash Redis
+- **Primary AI:** Google Generative AI (Gemini 2.0 Flash)
+- **Fallback AI:** Groq (Llama-3.3-70b-versatile)
+- **HTML Parsing:** Cheerio
 
-### AI Layer
-- Vision: Gemini 2.0 Flash
-- Fallback: Groq Llama 4 Scout
-- Secondary fallback: Groq Llama 3.3 70B
+## 🛠️ Getting Started
 
-### Processing
-- HTML parsing: Cheerio
-- Color extraction: HTML5 Canvas API (client-side)
+### Prerequisites
+You will need accounts for [Upstash](https://upstash.com/), [Supabase](https://supabase.com/), [Google AI Studio](https://aistudio.google.com/), and [Groq](https://groq.com/).
 
-### Deployment
-- Vercel
+### Installation
 
----
-
-## Getting Started
-
-### 1. Clone repository
+1. Clone the repository:
 ```bash
-git clone https://github.com/Yami066/CopyAd.git
-cd CopyAd
+git clone [https://github.com/yourusername/copyad.git](https://github.com/yourusername/copyad.git)
+cd copyad
+Install dependencies:
+
+Bash
 npm install
-GEMINI_API_KEY=your_gemini_key
-GROQ_API_KEY=your_groq_key
+Configure Environment Variables:
+Create a .env.local file in the root directory and add your keys:
+
+Code snippet
+NEXT_PUBLIC_SUPABASE_URL="[https://your-project.supabase.co](https://your-project.supabase.co)"
+NEXT_PUBLIC_SUPABASE_ANON_KEY="your-anon-key"
+
+UPSTASH_REDIS_REST_URL="[https://your-redis-url.upstash.io](https://your-redis-url.upstash.io)"
+UPSTASH_REDIS_REST_TOKEN="your-redis-token"
+
+GEMINI_API_KEY="your-gemini-key"
+GROQ_API_KEY="your-groq-key"
+Run the development server:
+
+Bash
 npm run dev
